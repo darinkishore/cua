@@ -19,9 +19,42 @@ const QUERY_MAX_ATTEMPTS: usize = 2;
 const MAX_REPLY_BYTES: usize = 4 * 1024 * 1024;
 const MAX_LOGICAL_PIXELS: u64 = 64 * 1024 * 1024;
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
-struct Workspace {
-    id: i64,
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Hash)]
+#[serde(try_from = "WorkspaceWire")]
+pub enum Workspace {
+    Empty,
+    Legacy(i64),
+    Address { kind: String, address: String },
+}
+
+#[derive(Deserialize)]
+struct WorkspaceWire {
+    id: Option<i64>,
+    address: Option<String>,
+    #[serde(rename = "type")]
+    kind: Option<String>,
+}
+
+impl TryFrom<WorkspaceWire> for Workspace {
+    type Error = &'static str;
+
+    fn try_from(wire: WorkspaceWire) -> Result<Self, Self::Error> {
+        // New Hyprland only assigns numeric IDs to numbered workspaces.
+        // Preserve the type as well: normal and special names may coincide.
+        match (wire.address, wire.kind, wire.id) {
+            (Some(address), Some(kind), None | Some(0)) if address.is_empty() && kind.is_empty() => {
+                Ok(Self::Empty)
+            }
+            (Some(address), Some(kind), _)
+                if !address.is_empty() && matches!(kind.as_str(), "normal" | "special") =>
+            {
+                Ok(Self::Address { kind, address })
+            }
+            (None, None, Some(0)) => Ok(Self::Empty),
+            (None, None, Some(id)) => Ok(Self::Legacy(id)),
+            _ => Err("invalid Hyprland workspace identity"),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -68,7 +101,7 @@ pub struct Window {
     pub y: i32,
     pub width: u32,
     pub height: u32,
-    pub workspace: i64,
+    pub workspace: Workspace,
     pub visible: bool,
     hidden: bool,
     /// Focus recency (0 = focused); the closest thing to z-order Hyprland
@@ -287,7 +320,7 @@ fn read_reply(stream: &mut UnixStream, command: &[u8], timeout: Duration) -> Res
     Ok(reply)
 }
 
-fn windows_from_clients(clients: Vec<Client>, active: &HashSet<i64>) -> Result<Vec<Window>> {
+fn windows_from_clients(clients: Vec<Client>, active: &HashSet<Workspace>) -> Result<Vec<Window>> {
     let mut seen = HashSet::new();
     let mut windows = Vec::new();
     for c in clients.into_iter().filter(|c| c.mapped) {
@@ -314,8 +347,8 @@ fn windows_from_clients(clients: Vec<Client>, active: &HashSet<i64>) -> Result<V
             y: c.at[1],
             width,
             height,
-            workspace: c.workspace.id,
-            visible: !c.hidden && active.contains(&c.workspace.id),
+            visible: !c.hidden && active.contains(&c.workspace),
+            workspace: c.workspace,
             hidden: c.hidden,
             focus_order: c.focus_history,
         });
@@ -388,12 +421,15 @@ pub fn single_output_transform() -> Result<u32> {
 
 pub fn list_windows() -> Result<Vec<Window>> {
     let monitors: Vec<Monitor> = query("j/monitors")?;
-    let active = monitors
+    windows_from_clients(query("j/clients")?, &active_workspaces(monitors))
+}
+
+fn active_workspaces(monitors: Vec<Monitor>) -> HashSet<Workspace> {
+    monitors
         .into_iter()
-        .flat_map(|m| [m.active_workspace.id, m.special_workspace.id])
-        .filter(|id| *id != 0)
-        .collect();
-    windows_from_clients(query("j/clients")?, &active)
+        .flat_map(|m| [m.active_workspace, m.special_workspace])
+        .filter(|workspace| *workspace != Workspace::Empty)
+        .collect()
 }
 
 #[derive(Deserialize)]
@@ -532,7 +568,7 @@ mod tests {
             y: 38,
             width: 800,
             height: 600,
-            workspace: 1,
+            workspace: Workspace::Legacy(1),
             visible: true,
             hidden: false,
             focus_order: 0,
@@ -851,8 +887,46 @@ mod tests {
     }
 
     #[test]
+    fn legacy_and_addressed_workspaces_preserve_window_visibility() {
+        for (monitors, workspaces, visible) in [
+            (serde_json::json!([{"activeWorkspace":{"id":1},"specialWorkspace":{"id":0}}]),
+             serde_json::json!([{"id":1},{"id":2}]), vec![true, false]),
+            // The empty special workspace on current Hyprland has no ID.
+            (serde_json::json!([{"activeWorkspace":{"address":"1","id":1,"type":"normal","name":"1"},
+                                "specialWorkspace":{"address":"","type":"","name":""}}]),
+             serde_json::json!([{"address":"1","id":1,"type":"normal"},
+                               {"address":"work","type":"normal"}]), vec![true, false]),
+            // Named and special workspaces have no numeric ID. A matching
+            // display name alone must never make an off-workspace client visible.
+            (serde_json::json!([{"activeWorkspace":{"address":"work","type":"normal","name":"Work"},
+                                "specialWorkspace":{"address":"special:notes","type":"special","name":"Notes"}}]),
+             serde_json::json!([{"address":"work","type":"normal"},
+                               {"address":"special:notes","type":"special"},
+                               {"address":"special:notes","type":"normal"}]), vec![true, true, false]),
+        ] {
+            let active = active_workspaces(serde_json::from_value(monitors).unwrap());
+            let clients = workspaces.as_array().unwrap().iter().enumerate().map(|(i, workspace)| {
+                let mut client = client(&format!("0x{:x}", i + 1), 42, [800, 600]);
+                client.workspace = serde_json::from_value(workspace.clone()).unwrap();
+                client
+            }).collect();
+            let windows = windows_from_clients(clients, &active).unwrap();
+            assert_eq!(windows.iter().map(|w| w.visible).collect::<Vec<_>>(), visible);
+        }
+        for invalid in [
+            serde_json::json!({}),
+            serde_json::json!({"address":"work"}),
+            serde_json::json!({"address":"work","type":"unknown"}),
+            serde_json::json!({"address":"","type":"normal"}),
+            serde_json::json!({"address":"","type":"","id":1}),
+        ] {
+            assert!(serde_json::from_value::<Workspace>(invalid).is_err());
+        }
+    }
+
+    #[test]
     fn unrepresentable_client_does_not_hide_valid_siblings() {
-        let active = HashSet::from([1]);
+        let active = HashSet::from([Workspace::Legacy(1)]);
         let windows = windows_from_clients(
             vec![
                 client("0x10", 42, [800, 600]),
@@ -874,7 +948,7 @@ mod tests {
 
     #[test]
     fn null_and_duplicate_client_addresses_still_fail() {
-        let active = HashSet::from([1]);
+        let active = HashSet::from([Workspace::Legacy(1)]);
         let null_address =
             windows_from_clients(vec![client("0x0", 42, [800, 600])], &active).unwrap_err();
         assert_eq!(
