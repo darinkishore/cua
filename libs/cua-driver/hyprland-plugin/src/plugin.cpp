@@ -324,7 +324,11 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 #else
         "Enable Cua's same-user local capability transport. Background mutation remains disabled in this build.",
 #endif
+#ifdef CUA_HYPRLAND_DEFAULT_ENABLED
+        true);
+#else
         false);
+#endif
     if (!HyprlandAPI::addConfigValueV2(handle, g_enabled))
         throw std::runtime_error("failed to register plugin:cua:enabled");
 

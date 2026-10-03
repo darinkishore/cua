@@ -6818,17 +6818,10 @@ impl Tool for ClickTool {
                     "modified clicks are unsupported by isolated input",
                 );
             }
-            if button == 1 && count == 1 {
-                let semantic = tokio::task::spawn_blocking(move || {
-                    crate::atspi::perform_action_at_screen_point(pid, xid, output_x, output_y)
-                })
-                .await;
-                if matches!(semantic, Ok(Ok(Some(_)))) {
-                    return ToolResult::text("Dispatched AT-SPI click.").with_structured(json!({
-                        "path": "wayland_atspi", "verified": false, "effect": "unverifiable"
-                    }));
-                }
-            }
+            // A pixel action belongs to the exact native surface. An AT-SPI
+            // hit on a terminal may invoke an unrelated toolkit action,
+            // changing widget/focus state without delivering a button event. Keep this route on the independent seat. Explicit
+            // element-token actions retain the semantic accessibility route.
             return isolated_hyprland_action(
                 &args,
                 pid,

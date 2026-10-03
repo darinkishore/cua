@@ -4,6 +4,7 @@ project(cua_hyprland_plugin VERSION 0.1.0 LANGUAGES CXX)
 
 option(CUA_HYPRLAND_BUILD_PLUGIN "Build the ABI-pinned Hyprland plugin" ON)
 option(CUA_HYPRLAND_INPUT "Build trusted-local per-action input protocol v3 candidate" OFF)
+option(CUA_HYPRLAND_DEFAULT_ENABLED "Enable the configured transport after compositor config reload" OFF)
 option(CUA_HYPRLAND_INPUT_TRACE "Instrument v3 input for native certification only" OFF)
 option(CUA_HYPRLAND_TEST_INPUT "Build nonshipping isolated-input VM experiment" OFF)
 if(CUA_HYPRLAND_INPUT AND CUA_HYPRLAND_TEST_INPUT)
@@ -246,10 +247,27 @@ if(CUA_HYPRLAND_BUILD_PLUGIN)
 
     add_library(cua_hyprland_plugin MODULE src/plugin.cpp)
     if(CUA_HYPRLAND_TEST_INPUT OR CUA_HYPRLAND_INPUT)
-        if(NOT HYPRLAND_VERSION STREQUAL "0.56.2")
-            message(FATAL_ERROR "Input is pinned to Hyprland 0.56.2")
+        if(NOT HYPRLAND_VERSION STREQUAL "0.56.2" AND
+           NOT (HYPRLAND_VERSION STREQUAL "0.56.0" AND
+                CUA_HYPRLAND_EXPECTED_VERSION STREQUAL "0.56.0"))
+            message(FATAL_ERROR "Input requires a qualified, explicitly pinned Hyprland build")
+        endif()
+        if(HYPRLAND_VERSION STREQUAL "0.56.0")
+            include(CheckCXXSourceCompiles)
+            set(CMAKE_REQUIRED_INCLUDES ${HYPRLAND_INCLUDE_DIRS})
+            check_cxx_source_compiles("#include <hyprland/src/version.h>
+#include <string_view>
+static_assert(std::string_view(GIT_COMMIT_HASH) == \"23118f9f7f24db7447069949c2df7fcd8ba380d0\");
+int main() {}" CUA_HYPRLAND_REVIEWED_MAIN)
+            unset(CMAKE_REQUIRED_INCLUDES)
+            if(NOT CUA_HYPRLAND_REVIEWED_MAIN)
+                message(FATAL_ERROR "This prerelease input port requires reviewed Hyprland commit 23118f9")
+            endif()
         endif()
         target_sources(cua_hyprland_plugin PRIVATE src/input_experiment.cpp)
+    endif()
+    if(CUA_HYPRLAND_DEFAULT_ENABLED)
+        target_compile_definitions(cua_hyprland_plugin PRIVATE CUA_HYPRLAND_DEFAULT_ENABLED=1)
     endif()
     if(CUA_HYPRLAND_INPUT)
         target_compile_definitions(cua_hyprland_plugin PRIVATE CUA_HYPRLAND_INPUT=1)

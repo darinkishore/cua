@@ -46,10 +46,32 @@ fn read_bounded(path: &Path) -> Result<String, &'static str> {
     Ok(content)
 }
 
+// Nix packages have immutable, content-addressed closure identities instead
+// of a pacman database. Distributors may compile in exact executable paths
+// only after exercising their native operation matrix. Runtime environment
+// variables cannot widen admission, and a future package rebuild is unknown.
+fn nix_qualified(executable: &Path, qualified: &str) -> bool {
+    qualified.lines().any(|candidate| {
+        candidate.starts_with("/nix/store/")
+            && Path::new(candidate) == executable
+            && !candidate.contains("/../")
+    })
+}
+
 pub(super) fn qualify(pid: u32) -> Result<(), &'static str> {
     let process_exe = PathBuf::from(format!("/proc/{pid}/exe"));
     let executable =
         std::fs::read_link(&process_exe).map_err(|_| "client_qualification_unavailable")?;
+    if nix_qualified(
+        &executable,
+        option_env!("CUA_HYPRLAND_QUALIFIED_NIX_EXECUTABLES").unwrap_or(""),
+    ) {
+        return if std::fs::read_link(&process_exe).ok().as_ref() == Some(&executable) {
+            Ok(())
+        } else {
+            Err("client_qualification_unavailable")
+        };
+    }
     let package = PACKAGES
         .iter()
         .find(|package| {
@@ -91,6 +113,27 @@ mod tests {
         assert_eq!(field("%VERSION%\n", "%VERSION%"), None);
         assert_eq!(field("%VERSION%\n\n", "%VERSION%"), None);
         assert_eq!(field("prefix%NAME%\ninkscape", "%NAME%"), None);
+    }
+
+    #[test]
+    fn nix_identity_requires_the_exact_qualified_executable() {
+        let exact =
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-ghostty-1.3.1/bin/.ghostty-wrapped";
+        assert!(nix_qualified(Path::new(exact), exact));
+        assert!(!nix_qualified(Path::new(exact), ""));
+        assert!(!nix_qualified(Path::new(exact), "/nix/store"));
+        assert!(!nix_qualified(
+            Path::new(&exact.replace("aaaa", "bbbb")),
+            exact
+        ));
+        assert!(!nix_qualified(
+            Path::new(&exact.replace(".ghostty-wrapped", "ghostty")),
+            exact
+        ));
+        assert!(!nix_qualified(
+            Path::new("/usr/bin/ghostty"),
+            "/usr/bin/ghostty"
+        ));
     }
 
     #[test]
