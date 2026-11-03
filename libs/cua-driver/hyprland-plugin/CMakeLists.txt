@@ -249,7 +249,9 @@ if(CUA_HYPRLAND_BUILD_PLUGIN)
     if(CUA_HYPRLAND_TEST_INPUT OR CUA_HYPRLAND_INPUT)
         if(NOT HYPRLAND_VERSION STREQUAL "0.56.2" AND
            NOT (HYPRLAND_VERSION STREQUAL "0.56.0" AND
-                CUA_HYPRLAND_EXPECTED_VERSION STREQUAL "0.56.0"))
+                CUA_HYPRLAND_EXPECTED_VERSION STREQUAL "0.56.0") AND
+           NOT (HYPRLAND_VERSION STREQUAL "0.57.0" AND
+                CUA_HYPRLAND_EXPECTED_VERSION STREQUAL "0.57.0"))
             message(FATAL_ERROR "Input requires a qualified, explicitly pinned Hyprland build")
         endif()
         if(HYPRLAND_VERSION STREQUAL "0.56.0")
@@ -262,6 +264,18 @@ int main() {}" CUA_HYPRLAND_REVIEWED_MAIN)
             unset(CMAKE_REQUIRED_INCLUDES)
             if(NOT CUA_HYPRLAND_REVIEWED_MAIN)
                 message(FATAL_ERROR "This prerelease input port requires reviewed Hyprland commit 23118f9")
+            endif()
+        endif()
+        if(HYPRLAND_VERSION STREQUAL "0.57.0")
+            include(CheckCXXSourceCompiles)
+            set(CMAKE_REQUIRED_INCLUDES ${HYPRLAND_INCLUDE_DIRS})
+            check_cxx_source_compiles("#include <hyprland/src/version.h>
+#include <string_view>
+static_assert(std::string_view(GIT_COMMIT_HASH) == \"e93501dd1bfeabf6206cdaebd853008d47a7dcc1\");
+int main() {}" CUA_HYPRLAND_REVIEWED_057)
+            unset(CMAKE_REQUIRED_INCLUDES)
+            if(NOT CUA_HYPRLAND_REVIEWED_057)
+                message(FATAL_ERROR "This prerelease input port requires reviewed Hyprland commit e93501d")
             endif()
         endif()
         target_sources(cua_hyprland_plugin PRIVATE src/input_experiment.cpp)

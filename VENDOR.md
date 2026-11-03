@@ -56,3 +56,20 @@ client_not_bound. An accessibility button action changed the real test page
 from Clicks: 0 to Clicks: 1; background text was refused. This is explicitly
 not universal Chrome/Electron background input support. Same-client conflicts,
 unknown clients and foreground fallbacks have not been weakened.
+
+## November 3 packaging compatibility review
+
+The Nix experimental build now accepts Hyprland 0.57.0 only at exact commit
+`e93501dd1bfeabf6206cdaebd853008d47a7dcc1`. The previous 0.56.0 commit check
+remains intact. Reviewed the intervening PluginAPI, event bus, window, focus,
+seat, pointer and data-device changes: the plugin obtains API version 0.2 from
+the headers; the independent-seat methods and subscribed input events retain
+their contracts. New pointer-constraint handling remains covered by the
+existing constrained-input refusals. No input implementation change was needed.
+The full plugin builds with the compositor's stdenv/dependency closure and all
+20 CTest checks pass. Exact runtime ABI verification is unchanged.
+
+This is build compatibility, not input qualification. A disposable nested
+software-rendered runtime probe could not start the compositor because its
+parent supplied no DMA-BUF allocator. No host plugin was loaded or replaced.
+The Nix qualified-executable list remains empty and autostart remains absent.
